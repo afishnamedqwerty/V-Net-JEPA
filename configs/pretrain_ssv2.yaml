@@ -1,0 +1,12 @@
+model:
+  dim: 256  # Chunk/embedding dim
+  vit_layers: 12
+training:
+  epochs: 100
+  batch_size: 64
+  mask_ratio: 0.5  # For chunk masking
+dataset:
+  path: /path/to/ssv2
+  fps: 12
+energy:
+  robust_loss: huber  # For noisy boundaries
