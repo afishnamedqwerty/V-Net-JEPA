@@ -1,0 +1,43 @@
+run:
+  phase: action
+  seed: 42
+  work_dir: outputs
+
+data:
+  name: droid
+  path: /path/to/droid
+  fps: 12
+  batch_size: 32
+  num_workers: 8
+  pin_memory: true
+  shuffle: true
+
+model:
+  embed_dim: 256
+  predictor:
+    layers: 6
+    heads: 4
+  fuser:
+    heads: 4
+    drop: 0.1
+  action:
+    dim: 7
+  freeze_encoder: true
+
+loss:
+  energy:
+    conditioned: true
+
+train:
+  epochs: 50
+  lr: 0.0001
+  weight_decay: 0.05
+  cem_samples: 100
+
+dist:
+  world_size: 1
+  backend: nccl
+  fp16: false
+
+logging:
+  interval: 50

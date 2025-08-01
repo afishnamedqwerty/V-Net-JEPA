@@ -4,7 +4,7 @@ import unittest
 import torch
 from models.hnet.encoder import LowLevelEncoder
 from models.hnet.routing import SparseRouting
-from models.hnet.downsampler import ChunkDownsampler
+from models.hnet.downsampler import LearnedAttentionPooling
 from models.hnet.pos_enc import AdaptivePosEnc
 from models.hnet.dechunker import Dechunker  # Assume impl
 
@@ -29,7 +29,7 @@ class TestHNet(unittest.TestCase):
 
     def test_downsampler(self):
         z = torch.randn(self.batch_size, 1024, self.D)
-        down = ChunkDownsampler()
+        down = LearnedAttentionPooling()
         z_pooled = down(z)
         self.assertEqual(z_pooled.shape[1], 196)
 

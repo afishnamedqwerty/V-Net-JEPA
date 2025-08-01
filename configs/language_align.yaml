@@ -1,0 +1,36 @@
+run:
+  phase: language
+  seed: 42
+  work_dir: outputs
+
+data:
+  name: captions
+  path: /path/to/captions_dataset
+  batch_size: 32
+  num_workers: 8
+  pin_memory: true
+  shuffle: true
+
+model:
+  embed_dim: 256
+  text_encoder_dim: 768
+  freeze_backbone: false
+
+loss:
+  contrastive:
+    temperature: 0.07
+  energy:
+    lambda: 0.1
+
+train:
+  epochs: 50
+  lr: 0.0001
+  weight_decay: 0.05
+
+dist:
+  world_size: 1
+  backend: nccl
+  fp16: false
+
+logging:
+  interval: 50

@@ -1,12 +1,46 @@
-model:
-  dim: 256  # Chunk/embedding dim
-  vit_layers: 12
-training:
-  epochs: 100
-  batch_size: 64
-  mask_ratio: 0.5  # For chunk masking
-dataset:
+run:
+  phase: pretrain
+  seed: 42
+  work_dir: outputs
+
+data:
+  name: ssv2
   path: /path/to/ssv2
   fps: 12
-energy:
-  robust_loss: huber  # For noisy boundaries
+  batch_size: 64
+  num_workers: 8
+  pin_memory: true
+  shuffle: true
+
+model:
+  embed_dim: 256
+  vit_layers: 12
+  predictor:
+    layers: 6
+    heads: 4
+
+loss:
+  vicregl:
+    inv: 25.0
+    var: 25.0
+    cov: 1.0
+  energy:
+    robust_loss: huber
+
+train:
+  epochs: 100
+  lr: 0.0001
+  weight_decay: 0.05
+  mask_ratio: 0.5
+  lambda_vic: 1.0
+  alpha: 0.0   # ratio reg
+  gamma: 0.0   # entropy reg
+  delta: 0.0   # boundary reg
+
+dist:
+  world_size: 1
+  backend: nccl
+  fp16: false
+
+logging:
+  interval: 50
