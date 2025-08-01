@@ -2,10 +2,6 @@
 
 H-Net V-JEPA replaces fixed tubulet tokenization in V-JEPA2 with a hierarchical, dynamic, end-to-end trainable pipeline. Raw video is encoded by a lightweight 3D CNN, routed into variable-sized semantic chunks with native sparse attention, downsampled via learned pooling, enriched with adaptive positional encodings, and then processed by a ViT backbone. The stack is trained jointly with energy-based objectives and VICRegL regularization, and supports multimodal alignment and action-conditioned post-training for robotic planning.
 
-For deeper design and distributed training details, see:
-- pipeline_architecture.md
-- distributed_training.md
-
 ## Repository Structure
 
 - models/hnet/
@@ -172,4 +168,4 @@ pytest -q
 
 ## License
 
-MIT (if provided) or repository default.
+Apache 2.0.
