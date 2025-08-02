@@ -346,7 +346,19 @@ void ring_forward_impl(
   }
 }
 
-// Placeholder backward dense kernel (to be replaced with true derivative streaming softmax)
+/* Dense varlen backward kernel
+   Computes gradients dQ, dK, dV for attention with per-sequence bounds defined by cu_seqlens.
+   This is a numerically-stable implementation that mirrors a standard attention backward:
+     - Forward (conceptual): P = softmax(scale * Q K^T); O = P V
+     - Given dO, compute:
+         dV = P^T dO
+         S = dO V^T            [T,H,T] (per (t,h,j) inner product across D)
+         For each query t: g = S[t] - sum_j P[t,j] * S[t,j]   (softmax Jacobian vector product)
+         dQ[t] = (g K) * scale
+         dK[j] += (g^T Q) * scale  where g^T corresponds to contributions from all queries that attend to key j
+   We implement this per (t,h) block, accumulating into dK/dV with atomic adds across blocks.
+   Accumulation uses FP32 internally via to_float/from_float helpers.
+*/
 template<typename scalar_t>
 __global__ void varlen_dense_backward_kernel(
     const scalar_t* __restrict__ grad_out, // [T,H,D]
@@ -354,9 +366,9 @@ __global__ void varlen_dense_backward_kernel(
     const scalar_t* __restrict__ k,        // [T,H,D]
     const scalar_t* __restrict__ v,        // [T,H,D]
     const int32_t* __restrict__ cu_seqlens,
-    scalar_t* __restrict__ dq,
-    scalar_t* __restrict__ dk,
-    scalar_t* __restrict__ dv,
+    scalar_t* __restrict__ dq,             // [T,H,D]
+    scalar_t* __restrict__ dk,             // [T,H,D]
+    scalar_t* __restrict__ dv,             // [T,H,D]
     int T, int H, int D,
     float scale)
 {
@@ -365,11 +377,131 @@ __global__ void varlen_dense_backward_kernel(
   int t = tid / H;
   int h = tid % H;
 
-  // Naive placeholder: set grads to zero (to be implemented)
+  // Determine sequence bounds for this token t
+  int seq_start = 0, seq_end = T;
+  const int MAX_SCAN = 8192;
+  int prev = 0;
+  #pragma unroll 1
+  for (int i = 0; i < MAX_SCAN; ++i) {
+    int32_t next = cu_seqlens[i + 1];
+    if (t < next) { seq_start = prev; seq_end = next; break; }
+    prev = next;
+    if (next >= T) { seq_start = prev; seq_end = T; break; }
+  }
+
+  const scalar_t* q_vec = q + (t * H + h) * D;
+  const scalar_t* go_vec = grad_out + (t * H + h) * D;
+
+  // 1) Recompute logits and softmax probabilities for this (t,h) within its sequence bounds
+  // Compute max logit for numerical stability
+  float max_logit = -INFINITY;
+  for (int j = seq_start; j < seq_end; ++j) {
+    const scalar_t* k_vec = k + (j * H + h) * D;
+    float dot = 0.f;
+    for (int d = 0; d < D; ++d) {
+      dot += to_float(q_vec[d]) * to_float(k_vec[d]);
+    }
+    float l = dot * scale;
+    if (l > max_logit) max_logit = l;
+  }
+  // Compute denominator and also cache probabilities P[t,j] and (dO • V_j)
+  // For memory efficiency we avoid storing P; recompute on the fly in loops as needed.
+  float denom = 0.f;
+  for (int j = seq_start; j < seq_end; ++j) {
+    const scalar_t* k_vec = k + (j * H + h) * D;
+    float dot = 0.f;
+    for (int d = 0; d < D; ++d) {
+      dot += to_float(q_vec[d]) * to_float(k_vec[d]);
+    }
+    denom += expf(dot * scale - max_logit);
+  }
+  float inv_denom = 1.f / denom;
+
+  // 2) Compute S_j = (dO_t • V_j) for this (t,h) and E = sum_j P_j * S_j
+  float E = 0.f;
+  // we will also accumulate dV_j = P_j * dO_t across j
+  for (int j = seq_start; j < seq_end; ++j) {
+    const scalar_t* k_vec = k + (j * H + h) * D;
+    const scalar_t* v_vec = v + (j * H + h) * D;
+
+    // p_j
+    float dot_qk = 0.f;
+    for (int d = 0; d < D; ++d) {
+      dot_qk += to_float(q_vec[d]) * to_float(k_vec[d]);
+    }
+    float p_j = expf(dot_qk * scale - max_logit) * inv_denom;
+
+    // S_j = dO • V_j
+    float S_j = 0.f;
+    for (int d = 0; d < D; ++d) {
+      S_j += to_float(go_vec[d]) * to_float(v_vec[d]);
+    }
+    E += p_j * S_j;
+
+    // dV_j += p_j * dO
+    scalar_t* dv_vec = dv + (j * H + h) * D;
+    for (int d = 0; d < D; ++d) {
+      float add = p_j * to_float(go_vec[d]);
+      atomicAdd(reinterpret_cast<float*>(&dv_vec[d]), add); // atomic on target storage (assumes float-compatible)
+    }
+  }
+
+  // 3) Compute g_j = p_j * (S_j - E). Then:
+  //    dQ_t += (sum_j g_j * K_j) * scale
+  //    dK_j += g_j * Q_t * scale
+  float* dq_vec_f = reinterpret_cast<float*>(dq + (t * H + h) * D); // accumulate via atomic adds below
+  for (int j = seq_start; j < seq_end; ++j) {
+    const scalar_t* k_vec = k + (j * H + h) * D;
+    const scalar_t* v_vec = v + (j * H + h) * D; // reused to recompute S_j
+    // p_j
+    float dot_qk = 0.f;
+    for (int d = 0; d < D; ++d) {
+      dot_qk += to_float(q_vec[d]) * to_float(k_vec[d]);
+    }
+    float p_j = expf(dot_qk * scale - max_logit) * inv_denom;
+
+    // S_j
+    float S_j = 0.f;
+    for (int d = 0; d < D; ++d) {
+      S_j += to_float(go_vec[d]) * to_float(v_vec[d]);
+    }
+    float g_j = p_j * (S_j - E);
+
+    // dQ_t += g_j * K_j * scale
+    for (int d = 0; d < D; ++d) {
+      float add = (g_j * to_float(k_vec[d])) * scale;
+      atomicAdd(&dq_vec_f[d], add);
+    }
+
+    // dK_j += g_j * Q_t * scale
+    scalar_t* dk_vec = dk + (j * H + h) * D;
+    for (int d = 0; d < D; ++d) {
+      float add = (g_j * to_float(q_vec[d])) * scale;
+      atomicAdd(reinterpret_cast<float*>(&dk_vec[d]), add);
+    }
+  }
+}
+
+/* Naive placeholder dense backward kernel (kept for debugging/fallback)
+   Sets all gradients to zero for a given (t,h). Not used in production. */
+template<typename scalar_t>
+__global__ void varlen_dense_backward_kernel_naive_zero(
+    scalar_t* __restrict__ dq,
+    scalar_t* __restrict__ dk,
+    scalar_t* __restrict__ dv,
+    int T, int H, int D)
+{
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (tid >= T * H) return;
+  int t = tid / H;
+  int h = tid % H;
+  scalar_t* dq_vec = dq + (t * H + h) * D;
+  scalar_t* dk_vec = dk + (t * H + h) * D;
+  scalar_t* dv_vec = dv + (t * H + h) * D;
   for (int d = 0; d < D; ++d) {
-    dq[(t * H + h) * D + d] = from_float<scalar_t>(0.f);
-    dk[(t * H + h) * D + d] = from_float<scalar_t>(0.f);
-    dv[(t * H + h) * D + d] = from_float<scalar_t>(0.f);
+    dq_vec[d] = from_float<scalar_t>(0.f);
+    dk_vec[d] = from_float<scalar_t>(0.f);
+    dv_vec[d] = from_float<scalar_t>(0.f);
   }
 }
 
