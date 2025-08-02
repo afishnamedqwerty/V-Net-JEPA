@@ -61,6 +61,44 @@ def ring_neighbors(rank: int, world: int):
     right = (rank + 1) % world
     return left, right
 
+def get_ring_neighbors(rank: int, world: int, step: int):
+    """
+    Zig-zag neighbors for a given step:
+      - even steps go clockwise (send to right, receive from left)
+      - odd steps go counter-clockwise (send to left, receive from right)
+    Returns (prev_rank, next_rank)
+    """
+    if world <= 1:
+        return rank, rank
+    clockwise = (step % 2) == 0
+    if clockwise:
+        prev_rank = (rank - 1 + world) % world
+        next_rank = (rank + 1) % world
+    else:
+        prev_rank = (rank + 1) % world
+        next_rank = (rank - 1 + world) % world
+    return prev_rank, next_rank
+
+def zigzag_direction(step: int) -> str:
+    """Return 'clockwise' on even steps, 'counter' on odd steps."""
+    return "clockwise" if (step % 2) == 0 else "counter"
+
+def post_isend(tensor: torch.Tensor, dst: int, tag: int = 0):
+    """
+    Thin wrapper for nonblocking send. Returns a Work handle or None if not distributed.
+    """
+    if not dist.is_initialized() or get_world_size() == 1:
+        return None
+    return dist.isend(tensor.contiguous(), dst=dst, tag=tag)
+
+def post_irecv(tensor: torch.Tensor, src: int, tag: int = 0):
+    """
+    Thin wrapper for nonblocking recv. Returns a Work handle or None if not distributed.
+    """
+    if not dist.is_initialized() or get_world_size() == 1:
+        return None
+    return dist.irecv(tensor, src=src, tag=tag)
+
 def ring_exchange(tensor: torch.Tensor, peer: int, tag: int = 0) -> torch.Tensor:
     """
     Non-blocking send/recv to a single peer. Returns received tensor (same shape).
