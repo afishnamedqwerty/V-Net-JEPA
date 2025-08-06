@@ -7,6 +7,7 @@ from models.hnet.encoder import LowLevelEncoder  # Lowest-level 3D CNN
 from models.hnet.routing import SparseRouting  # Dynamic chunking with sparse attention
 from models.hnet.downsampler import LearnedAttentionPooling  # Semantic-aware pooling
 from models.hnet.pos_enc import AdaptivePosEnc  # Adaptive positional encoding
+from typing import Dict
 from utils.distrib import zigzag_ring_attention, checkpoint_sequential, get_world_size, is_main_process, barrier
 
 # Helper function to compute positions (grid coords for features)
@@ -145,7 +146,20 @@ class HNetViT(nn.Module):
         self.encoder = LowLevelEncoder()  # Lowest-level 3D CNN
         self.routing = SparseRouting(D=embed_dim)  # Dynamic chunking
         # Use correct constructor args for pooling (D_chunk and M_out)
-        self.downsampler = LearnedAttentionPooling(D_chunk=embed_dim, M_out=196)  # Semantic pooling
+        # Enable variable-length pooling (configurable). Defaults safe/backward compatible at inference since ViT accepts masks.
+        self.downsampler = LearnedAttentionPooling(
+            D_chunk=embed_dim,
+            M_out=196,
+            num_heads=num_heads,
+            enable_variable=True,
+            max_queries=256,
+            ratio_pred_dim=None,
+            ratio_target=None,
+            ratio_mode="keep_frac",
+            ratio_loss_weight=0.0,
+            gumbel_tau=1.0,
+            hard_select=False,
+        )  # Semantic pooling
         self.pos_enc = AdaptivePosEnc(D=embed_dim)  # Adaptive pos based on centroids/sizes
         # Enable checkpointing in ViT layers by default for activation recomputation
         self.vit = ViT(embed_dim=embed_dim, num_layers=num_layers, num_heads=num_heads, mlp_ratio=mlp_ratio, drop_rate=drop_rate, checkpoint_layers=True)
@@ -170,11 +184,21 @@ class HNetViT(nn.Module):
             original_positions=positions,
             assignments=p
         )
-        if len(out) == 3:
-            z_pooled, centroids, sizes = out
-            pooled_mask = torch.zeros(z_pooled.size(0), z_pooled.size(1), dtype=torch.bool, device=z_pooled.device)
+        # Support both old (3-tuple) and new (4-tuple) API. New API returns aux dict instead of mask.
+        pooled_mask = None
+        aux: Dict[str, torch.Tensor] = {}
+        if isinstance(out, tuple) and len(out) == 4:
+            z_pooled, centroids, sizes, aux = out
+            # Build key_padding_mask for kept tokens if keep_mask provided (True means PAD)
+            keep_mask = aux.get("keep_mask", None)  # B x Q in [0,1]
+            if keep_mask is not None:
+                # consider kept if weight>0; pad if near zero
+                pooled_mask = (keep_mask <= 1e-4)
         else:
-            z_pooled, centroids, sizes, pooled_mask = out  # B x M' x D, B x M' x 3, B x M', B x M'
+            z_pooled, centroids, sizes = out
+        if pooled_mask is None:
+            pooled_mask = torch.zeros(z_pooled.size(0), z_pooled.size(1), dtype=torch.bool, device=z_pooled.device)
+
         z_pos = self.pos_enc(z_pooled, centroids, sizes)  # Add adaptive pos: B M' D
         return self.vit(z_pos, mask=pooled_mask)  # Contextualized: B M' D
 

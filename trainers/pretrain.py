@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from models.vjepa.vit import HNetViT
+from typing import Dict
 from models.vjepa.predictor import Predictor
 from losses.energy import EnergyLoss
 from losses.vicregl import VICRegLLoss
@@ -63,7 +64,10 @@ def pretrain(cfg):
             x = batch['video'].to(device)  # B T H W C
 
             # Forward through H-Net ViT to get contextualized chunks (B x M' x D)
+            # Optionally capture aux from downsampler by enabling it in the model and reading a side-channel attribute.
+            # Current HNetViT returns contextualized chunks; ratio loss is exposed via model.last_aux if available.
             z_ctx = model(x)                 # contextualized chunks
+            aux: Dict[str, torch.Tensor] = getattr(model, "last_aux", {}) if hasattr(model, "last_aux") else {}
             # Prepare EMA target
             model.update_target()
             with torch.no_grad():
@@ -87,6 +91,8 @@ def pretrain(cfg):
 
             # Optional routing regularizers if available from model (placeholders: zero if not exposed)
             loss_ratio = torch.tensor(0.0, device=device)
+            if isinstance(aux, dict) and "ratio_loss" in aux:
+                loss_ratio = aux["ratio_loss"]
             loss_ent = torch.tensor(0.0, device=device)
             loss_bound = torch.tensor(0.0, device=device)
 
