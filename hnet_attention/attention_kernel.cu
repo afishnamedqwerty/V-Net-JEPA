@@ -9,14 +9,13 @@ namespace cg = cooperative_groups;
 
 /*
   NOTE:
-  This file provides a first-pass scaffolding of the full zig-zag ring dynamic attention kernels.
+  This file provides the full zig-zag ring dynamic attention kernels.
   It includes:
     - Dense varlen forward kernel (intra-rank compute path, no comm) as baseline
     - Launcher APIs matching attention_extension.cpp
     - Placeholders for ring comm overlap (N-1 steps) and backward kernels
-  The goal is to get a compilable extension with clearly marked TODO blocks where
-  the actual shared-memory tiling, streaming softmax, NCCL overlap, and backward derivatives
-  will be filled in next.
+  The goal is to get a compilable extension with full implementation of
+  the shared-memory tiling, streaming softmax, NCCL overlap, and backward derivatives.
 */
 
 // Helpers

@@ -140,25 +140,31 @@ class TransformerLayer(nn.Module):
 
 # Integrated H-Net ViT Encoder (main class, with EMA target)
 class HNetViT(nn.Module):
-    def __init__(self, embed_dim=256, num_layers=12, num_heads=8, mlp_ratio=4, drop_rate=0.1, momentum=0.996):
+    def __init__(self, embed_dim=256, num_layers=12, num_heads=8, mlp_ratio=4, drop_rate=0.1, momentum=0.996,
+                 down_kwargs: dict = None):
         super().__init__()
         self.embed_dim = embed_dim
         self.encoder = LowLevelEncoder()  # Lowest-level 3D CNN
         self.routing = SparseRouting(D=embed_dim)  # Dynamic chunking
         # Use correct constructor args for pooling (D_chunk and M_out)
         # Enable variable-length pooling (configurable). Defaults safe/backward compatible at inference since ViT accepts masks.
-        self.downsampler = LearnedAttentionPooling(
-            D_chunk=embed_dim,
-            M_out=196,
-            num_heads=num_heads,
+        base_down = dict(
             enable_variable=True,
             max_queries=256,
-            ratio_pred_dim=None,
+            ratio_pred_dim=4,
             ratio_target=None,
             ratio_mode="keep_frac",
             ratio_loss_weight=0.0,
             gumbel_tau=1.0,
             hard_select=False,
+        )
+        if down_kwargs is not None:
+            base_down.update(down_kwargs)
+        self.downsampler = LearnedAttentionPooling(
+            D_chunk=embed_dim,
+            M_out=base_down.pop("M_out", 196),
+            num_heads=num_heads,
+            **base_down,
         )  # Semantic pooling
         self.pos_enc = AdaptivePosEnc(D=embed_dim)  # Adaptive pos based on centroids/sizes
         # Enable checkpointing in ViT layers by default for activation recomputation
@@ -178,34 +184,66 @@ class HNetViT(nn.Module):
         z, p = self.routing(h_flat, positions)  # Chunks: B M D, assignments: B N_f M
         # Pool with awareness of assignments and positions to align centroids/sizes with M'
         # Expect downsampler to optionally provide pooled mask; if not, create zeros mask
+        # Build lightweight ratio features per batch to condition ratio predictor
+        # sizes: B x M (sum of assignments per chunk); normalize by N_f for stability
+        sizes = p.sum(dim=1)  # B x M
+        N_f = h_flat.size(1)
+        M = z.size(1)
+        sizes_norm = sizes / max(N_f, 1)
+        mean_size = sizes_norm.mean(dim=1, keepdim=True)  # B x 1
+        std_size = sizes_norm.std(dim=1, unbiased=False, keepdim=True)  # B x 1
+        m_norm = (torch.full_like(mean_size, fill_value=float(M)) / max(self.downsampler.max_queries, 1)).clamp(0.0, 1.0)  # B x 1
+        nf_norm = (torch.full_like(mean_size, fill_value=float(N_f)) / max(N_f, 1)).clamp(0.0, 1.0)  # B x 1 (always 1)
+        ratio_features = torch.cat([mean_size, std_size, m_norm, nf_norm], dim=1)  # B x 4
+
         out = self.downsampler(
             z_chunks=z,
             chunk_masks=None,
             original_positions=positions,
-            assignments=p
+            assignments=p,
+            ratio_features=ratio_features
         )
         # Support both old (3-tuple) and new (4-tuple) API. New API returns aux dict instead of mask.
         pooled_mask = None
         aux: Dict[str, torch.Tensor] = {}
         if isinstance(out, tuple) and len(out) == 4:
-            z_pooled, centroids, sizes, aux = out
+            z_pooled, centroids, sizes_out, aux = out
             # Build key_padding_mask for kept tokens if keep_mask provided (True means PAD)
             keep_mask = aux.get("keep_mask", None)  # B x Q in [0,1]
             if keep_mask is not None:
                 # consider kept if weight>0; pad if near zero
                 pooled_mask = (keep_mask <= 1e-4)
+            # Expose auxiliary signals (e.g., ratio loss) for trainer integration
+            self.last_aux = aux
         else:
-            z_pooled, centroids, sizes = out
+            z_pooled, centroids, sizes_out = out
+            self.last_aux = {}
         if pooled_mask is None:
             pooled_mask = torch.zeros(z_pooled.size(0), z_pooled.size(1), dtype=torch.bool, device=z_pooled.device)
 
-        z_pos = self.pos_enc(z_pooled, centroids, sizes)  # Add adaptive pos: B M' D
+        z_pos = self.pos_enc(z_pooled, centroids, sizes_out)  # Add adaptive pos: B M' D
         return self.vit(z_pos, mask=pooled_mask)  # Contextualized: B M' D
 
     def update_target(self):
         # Initialize EMA target if needed
         if self.target_encoder is None:
-            self.target_encoder = HNetViT(embed_dim=self.vit.embed_dim, num_layers=len(self.vit.layers))
+            # Recreate with matching architecture config (notably downsampler knobs)
+            try:
+                heads = self.vit.layers[0].heads if hasattr(self.vit.layers[0], 'heads') else 8
+            except Exception:
+                heads = 8
+            current_down_kwargs = dict(
+                enable_variable=getattr(self.downsampler, 'enable_variable', True),
+                max_queries=getattr(self.downsampler, 'max_queries', 256),
+                ratio_pred_dim=getattr(self.downsampler, 'ratio_pred_dim', 4),
+                ratio_target=getattr(self.downsampler, 'ratio_target', None),
+                ratio_mode=getattr(self.downsampler, 'ratio_mode', 'keep_frac'),
+                ratio_loss_weight=getattr(self.downsampler, 'ratio_loss_weight', 0.0),
+                gumbel_tau=getattr(self.downsampler, 'gumbel_tau', 1.0),
+                hard_select=getattr(self.downsampler, 'hard_select', False),
+                M_out=getattr(self.downsampler, 'M_out', 196),
+            )
+            self.target_encoder = HNetViT(embed_dim=self.vit.embed_dim, num_layers=len(self.vit.layers), num_heads=heads, down_kwargs=current_down_kwargs)
             self.target_encoder.load_state_dict(self.state_dict())
 
         # Momentum update on all ranks

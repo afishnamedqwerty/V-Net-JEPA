@@ -35,7 +35,8 @@ def action_posttrain(cfg):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Backbone and predictor
-    model = HNetViT(embed_dim=256).to(device)
+    model = HNetViT(embed_dim=getattr(cfg, 'embed_dim', 256),
+                    down_kwargs=getattr(cfg, 'down_kwargs', None)).to(device)
     if getattr(cfg, 'freeze_encoder', True):
         for p in model.encoder.parameters():
             p.requires_grad = False
@@ -54,6 +55,13 @@ def action_posttrain(cfg):
     loader = cfg.loader if hasattr(cfg, 'loader') else DataLoader(getattr(cfg, 'dataset'), batch_size=getattr(cfg, 'batch_size', 8), shuffle=True)
 
     energy = EnergyLoss(conditioned=True).to(device)
+
+    # Optional: configure downsampler ratio if not provided via down_kwargs
+    if hasattr(model, 'downsampler'):
+        if getattr(model.downsampler, 'ratio_target', None) is None and hasattr(cfg, 'compression_ratio'):
+            model.downsampler.ratio_target = getattr(cfg, 'compression_ratio', 0.5)
+        if getattr(model.downsampler, 'ratio_loss_weight', 0.0) <= 0 and hasattr(cfg, 'alpha'):
+            model.downsampler.ratio_loss_weight = getattr(cfg, 'alpha', 0.0)
 
     for epoch in range(getattr(cfg, 'epochs', 50)):
         for batch in loader:

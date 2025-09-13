@@ -12,7 +12,8 @@ def probe_train(cfg):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Load HNetViT backbone; optionally freeze or allow light finetuning of routing
-    model = HNetViT(embed_dim=256).to(device)
+    model = HNetViT(embed_dim=getattr(cfg, 'embed_dim', 256),
+                    down_kwargs=getattr(cfg, 'down_kwargs', None)).to(device)
     if getattr(cfg, 'freeze_backbone', True):
         for p in model.parameters():
             p.requires_grad = False
@@ -30,6 +31,13 @@ def probe_train(cfg):
 
     bce = nn.BCEWithLogitsLoss()
     energy = EnergyLoss(mode='saliency').to(device)  # Encourage coherent low energy on salient chunks
+
+    # Optional: configure downsampler ratio if not provided via down_kwargs
+    if hasattr(model, 'downsampler'):
+        if getattr(model.downsampler, 'ratio_target', None) is None and hasattr(cfg, 'compression_ratio'):
+            model.downsampler.ratio_target = getattr(cfg, 'compression_ratio', 0.5)
+        if getattr(model.downsampler, 'ratio_loss_weight', 0.0) <= 0 and hasattr(cfg, 'alpha'):
+            model.downsampler.ratio_loss_weight = getattr(cfg, 'alpha', 0.0)
 
     for epoch in range(getattr(cfg, 'epochs', 20)):
         for batch in loader:

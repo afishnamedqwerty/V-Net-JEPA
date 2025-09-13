@@ -8,7 +8,7 @@ from typing import Dict
 from models.vjepa.predictor import Predictor
 from losses.energy import EnergyLoss
 from losses.vicregl import VICRegLLoss
-from losses.auxiliaries import RatioLoss, EntropyReg, BoundaryReg
+# Auxiliary regularizers are injected via model.downsampler aux; no direct imports needed here
 # from data.ssv2 import SSv2Dataset
 from utils.logging import Logger
 from utils.misc import get_device
@@ -35,7 +35,8 @@ def pretrain(cfg):
     device = get_device()
     embed_dim = getattr(cfg, 'embed_dim', 256)
 
-    model = HNetViT(embed_dim=embed_dim).to(device)
+    model = HNetViT(embed_dim=embed_dim,
+                    down_kwargs=getattr(cfg, 'down_kwargs', None)).to(device)
     predictor = Predictor(embed_dim=embed_dim,
                           num_layers=getattr(cfg, 'pred_layers', 6),
                           num_heads=getattr(cfg, 'pred_heads', 4)).to(device)
@@ -50,9 +51,10 @@ def pretrain(cfg):
     vicregl = VICRegLLoss(inv_weight=getattr(cfg, 'vic_inv', 25.0),
                           var_weight=getattr(cfg, 'vic_var', 25.0),
                           cov_weight=getattr(cfg, 'vic_cov', 1.0))
-    ratio_loss = RatioLoss(target_ratio=getattr(cfg, 'compression_ratio', 0.5))
-    entropy_reg = EntropyReg()
-    boundary_reg = BoundaryReg()
+    # Configure ratio regularizer in the downsampler
+    if hasattr(model, 'downsampler'):
+        model.downsampler.ratio_target = getattr(cfg, 'compression_ratio', 0.5)
+        model.downsampler.ratio_loss_weight = getattr(cfg, 'alpha', 0.0)
 
     for epoch in range(getattr(cfg, 'epochs', 200)):
         # Deterministic generator seeded per-epoch for identical masks across ranks
@@ -97,7 +99,7 @@ def pretrain(cfg):
             loss_bound = torch.tensor(0.0, device=device)
 
             total = loss_e + getattr(cfg, 'lambda_vic', 1.0) * loss_vic \
-                    + getattr(cfg, 'alpha', 0.0) * loss_ratio \
+                    + loss_ratio \
                     + getattr(cfg, 'gamma', 0.0) * loss_ent \
                     + getattr(cfg, 'delta', 0.0) * loss_bound
 

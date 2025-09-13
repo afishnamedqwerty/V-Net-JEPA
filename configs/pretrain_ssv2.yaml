@@ -18,6 +18,15 @@ model:
   predictor:
     layers: 6
     heads: 4
+  downsampler:
+    enable_variable: true
+    max_queries: 256
+    ratio_pred_dim: 4
+    ratio_mode: keep_frac   # or "compress" for M/M'
+    gumbel_tau: 1.0
+    hard_select: false
+    ratio_target: 0.5
+    ratio_loss_weight: 0.0
 
 loss:
   vicregl:
@@ -33,7 +42,8 @@ train:
   weight_decay: 0.05
   mask_ratio: 0.5
   lambda_vic: 1.0
-  alpha: 0.0   # ratio reg
+  alpha: 0.0   # ratio reg weight
+  compression_ratio: 0.5  # target keep fraction M'/M
   gamma: 0.0   # entropy reg
   delta: 0.0   # boundary reg
 

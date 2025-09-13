@@ -73,6 +73,15 @@ def run_phase_pretrain(cfg, out_dir):
     pred = m.get("predictor", {})
     setattr(c, "pred_layers", pred.get("layers", cfg.get("pred_layers", 6)))
     setattr(c, "pred_heads", pred.get("heads", cfg.get("pred_heads", 4)))
+    # downsampler knobs -> pass as dict to trainer
+    dwn = m.get("downsampler", {})
+    # Preserve only known keys for safety
+    allowed_keys = {
+        "enable_variable", "max_queries", "ratio_pred_dim", "ratio_target", "ratio_mode",
+        "ratio_loss_weight", "gumbel_tau", "hard_select", "M_out"
+    }
+    down_kwargs = {k: v for k, v in dwn.items() if k in allowed_keys}
+    setattr(c, "down_kwargs", down_kwargs if len(down_kwargs) > 0 else None)
     # data
     d = cfg.get("data", {})
     setattr(c, "batch_size", d.get("batch_size", cfg.get("batch_size", 8)))
@@ -89,6 +98,8 @@ def run_phase_pretrain(cfg, out_dir):
     setattr(c, "mask_ratio", t.get("mask_ratio", cfg.get("mask_ratio", 0.4)))
     setattr(c, "lambda_vic", t.get("lambda_vic", cfg.get("lambda_vic", 1.0)))
     setattr(c, "alpha", t.get("alpha", cfg.get("alpha", 0.0)))
+    # compression_ratio is the keep fraction target for downsampler ratio regulator
+    setattr(c, "compression_ratio", t.get("compression_ratio", cfg.get("compression_ratio", 0.5)))
     setattr(c, "gamma", t.get("gamma", cfg.get("gamma", 0.0)))
     setattr(c, "delta", t.get("delta", cfg.get("delta", 0.0)))
     # seed
@@ -112,6 +123,14 @@ def run_phase_language_align(cfg, out_dir, init_ckpt=None):
     # map unified YAML
     m = cfg.get("model", {})
     setattr(c, "embed_dim", m.get("embed_dim", cfg.get("embed_dim", 256)))
+    # downsampler knobs
+    dwn = m.get("downsampler", {})
+    allowed_keys = {
+        "enable_variable", "max_queries", "ratio_pred_dim", "ratio_target", "ratio_mode",
+        "ratio_loss_weight", "gumbel_tau", "hard_select", "M_out"
+    }
+    down_kwargs = {k: v for k, v in dwn.items() if k in allowed_keys}
+    setattr(c, "down_kwargs", down_kwargs if len(down_kwargs) > 0 else None)
     setattr(c, "freeze_backbone", m.get("freeze_backbone", False))
     # data
     d = cfg.get("data", {})
@@ -125,6 +144,9 @@ def run_phase_language_align(cfg, out_dir, init_ckpt=None):
     setattr(c, "epochs", t.get("epochs", cfg.get("epochs_lang", 50)))
     setattr(c, "lr", t.get("lr", cfg.get("lr", 1e-4)))
     setattr(c, "weight_decay", t.get("weight_decay", cfg.get("weight_decay", 0.05)))
+    # optional ratio control fallbacks
+    setattr(c, "alpha", t.get("alpha", cfg.get("alpha", 0.0)))
+    setattr(c, "compression_ratio", t.get("compression_ratio", cfg.get("compression_ratio", 0.5)))
 
     # Load backbone init if provided; trainers internally construct models
     if init_ckpt and os.path.isfile(init_ckpt):
@@ -145,6 +167,13 @@ def run_phase_probe(cfg, out_dir, init_ckpt=None):
     # map unified YAML
     m = cfg.get("model", {})
     setattr(c, "embed_dim", m.get("embed_dim", cfg.get("embed_dim", 256)))
+    dwn = m.get("downsampler", {})
+    allowed_keys = {
+        "enable_variable", "max_queries", "ratio_pred_dim", "ratio_target", "ratio_mode",
+        "ratio_loss_weight", "gumbel_tau", "hard_select", "M_out"
+    }
+    down_kwargs = {k: v for k, v in dwn.items() if k in allowed_keys}
+    setattr(c, "down_kwargs", down_kwargs if len(down_kwargs) > 0 else None)
     setattr(c, "freeze_backbone", m.get("freeze_backbone", True))
     # data
     d = cfg.get("data", {})
@@ -156,6 +185,9 @@ def run_phase_probe(cfg, out_dir, init_ckpt=None):
     setattr(c, "epochs", t.get("epochs", cfg.get("epochs_probe", 20)))
     setattr(c, "lr", t.get("lr", cfg.get("lr", 1e-4)))
     setattr(c, "weight_decay", t.get("weight_decay", cfg.get("weight_decay", 0.05)))
+    # optional ratio control fallbacks
+    setattr(c, "alpha", t.get("alpha", cfg.get("alpha", 0.0)))
+    setattr(c, "compression_ratio", t.get("compression_ratio", cfg.get("compression_ratio", 0.5)))
 
     if init_ckpt and os.path.isfile(init_ckpt):
         pass
@@ -183,6 +215,14 @@ def run_phase_action_posttrain(cfg, out_dir, init_ckpt=None):
     setattr(c, "freeze_encoder", m.get("freeze_encoder", True))
     a = m.get("action", {})
     setattr(c, "action_dim", a.get("dim", cfg.get("action_dim", 7)))
+    # downsampler knobs
+    dwn = m.get("downsampler", {})
+    allowed_keys = {
+        "enable_variable", "max_queries", "ratio_pred_dim", "ratio_target", "ratio_mode",
+        "ratio_loss_weight", "gumbel_tau", "hard_select", "M_out"
+    }
+    down_kwargs = {k: v for k, v in dwn.items() if k in allowed_keys}
+    setattr(c, "down_kwargs", down_kwargs if len(down_kwargs) > 0 else None)
 
     # data
     d = cfg.get("data", {})
@@ -194,6 +234,9 @@ def run_phase_action_posttrain(cfg, out_dir, init_ckpt=None):
     setattr(c, "lr", t.get("lr", cfg.get("lr", 1e-4)))
     setattr(c, "weight_decay", t.get("weight_decay", cfg.get("weight_decay", 0.05)))
     setattr(c, "cem_samples", t.get("cem_samples", cfg.get("cem_samples", 100)))
+    # optional ratio control fallbacks
+    setattr(c, "alpha", t.get("alpha", cfg.get("alpha", 0.0)))
+    setattr(c, "compression_ratio", t.get("compression_ratio", cfg.get("compression_ratio", 0.5)))
 
     if init_ckpt and os.path.isfile(init_ckpt):
         pass

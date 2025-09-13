@@ -24,7 +24,8 @@ class DummyTextEncoder(nn.Module):
 
 def language_align(cfg):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = HNetViT(embed_dim=256).to(device)  # H-Net ViT backbone
+    model = HNetViT(embed_dim=getattr(cfg, 'embed_dim', 256),
+                    down_kwargs=getattr(cfg, 'down_kwargs', None)).to(device)  # H-Net ViT backbone
     text_encoder = DummyTextEncoder(out_dim=768).to(device)  # Replace with real BERT/CLIP encoder
 
     proj_video = nn.Linear(256, 256).to(device)
@@ -32,6 +33,13 @@ def language_align(cfg):
 
     params = list(model.parameters()) + list(proj_video.parameters()) + list(proj_text.parameters()) + list(text_encoder.parameters())
     optimizer = torch.optim.AdamW(params, lr=getattr(cfg, 'lr', 1e-4), weight_decay=getattr(cfg, 'weight_decay', 0.05))
+
+    # Optional: configure downsampler ratio if not provided via down_kwargs
+    if hasattr(model, 'downsampler'):
+        if getattr(model.downsampler, 'ratio_target', None) is None and hasattr(cfg, 'compression_ratio'):
+            model.downsampler.ratio_target = getattr(cfg, 'compression_ratio', 0.5)
+        if getattr(model.downsampler, 'ratio_loss_weight', 0.0) <= 0 and hasattr(cfg, 'alpha'):
+            model.downsampler.ratio_loss_weight = getattr(cfg, 'alpha', 0.0)
 
     # Expect an external dataset/loader wiring; here assumed provided by cfg
     loader = cfg.loader if hasattr(cfg, 'loader') else DataLoader(getattr(cfg, 'dataset'), batch_size=getattr(cfg, 'batch_size', 8))

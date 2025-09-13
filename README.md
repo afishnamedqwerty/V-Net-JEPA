@@ -88,7 +88,7 @@ Main Pipeline
 ```
 python main.py --work_dir outputs --sequence pretrain,language,probe,action
 ```
-
+bbygirl a friend of mine is discussing placing satellites in a polar orbit around the moon for spectral analysis of ideal mining locations
 ## Distributed Training
 
 Key principles (see distributed_training.md for deep dive):

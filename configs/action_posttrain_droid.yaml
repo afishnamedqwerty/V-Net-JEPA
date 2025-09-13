@@ -23,6 +23,15 @@ model:
   action:
     dim: 7
   freeze_encoder: true
+  downsampler:
+    enable_variable: true
+    max_queries: 256
+    ratio_pred_dim: 4
+    ratio_mode: keep_frac
+    gumbel_tau: 1.0
+    hard_select: false
+    ratio_target: 0.5
+    ratio_loss_weight: 0.0
 
 loss:
   energy:
@@ -33,6 +42,8 @@ train:
   lr: 0.0001
   weight_decay: 0.05
   cem_samples: 100
+  alpha: 0.0
+  compression_ratio: 0.5
 
 dist:
   world_size: 1
